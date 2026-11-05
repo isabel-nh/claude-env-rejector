@@ -1,0 +1,12 @@
+{
+  "name": "env-rejector",
+  "version": "0.1.0",
+  "description": "Denies Read, Bash and Grep access to .env files and strips .env hits from Grep results, so secrets stay out of the model's context.",
+  "author": { "name": "Isabel Maskrey" },
+  "homepage": "https://github.com/isabel-nh/claude-env-rejector",
+  "repository": "https://github.com/isabel-nh/claude-env-rejector",
+  "documentationUrl": "https://github.com/isabel-nh/claude-env-rejector#readme",
+  "supportUrl": "https://github.com/isabel-nh/claude-env-rejector/issues",
+  "license": "MIT",
+  "keywords": ["secrets", "env", "dotenv", "security", "mod"]
+}

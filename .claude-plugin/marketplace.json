@@ -1,0 +1,12 @@
+{
+  "name": "claude-env-rejector",
+  "owner": { "name": "Isabel Maskrey" },
+  "description": "Claude Code mod that keeps .env files out of the model's reach",
+  "plugins": [
+    {
+      "name": "env-rejector",
+      "source": "./",
+      "description": "Denies Read, Bash and Grep access to .env files and strips .env hits from Grep results, so secrets stay out of the model's context."
+    }
+  ]
+}
