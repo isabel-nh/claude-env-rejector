@@ -1,6 +1,6 @@
 {
   "name": "env-rejector",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Denies Read, Bash and Grep access to .env files and strips .env hits from Grep results, so secrets stay out of the model's context.",
   "author": { "name": "Isabel Maskrey" },
   "homepage": "https://github.com/isabel-nh/claude-env-rejector",
@@ -8,5 +8,13 @@
   "documentationUrl": "https://github.com/isabel-nh/claude-env-rejector#readme",
   "supportUrl": "https://github.com/isabel-nh/claude-env-rejector/issues",
   "license": "MIT",
-  "keywords": ["secrets", "env", "dotenv", "security", "mod"]
+  "keywords": ["secrets", "env", "dotenv", "security", "mod"],
+  "userConfig": {
+    "commitWrapper": {
+      "type": "string",
+      "title": "Commit wrapper pattern",
+      "description": "Regular expression matched against each line of a Bash command. A matching line is treated like `git commit`: its quoted arguments are commit-message text, and its repository is the one named by its `-C <dir>`, else a leading `cd`, else the session's directory. Empty: only `git commit` is recognized.",
+      "default": ""
+    }
+  }
 }

@@ -1,19 +1,40 @@
 import type { Register } from 'claude-code'
-import { bashVerdict, isEnvGlob, isEnvPath, isEnvResultLine } from './rules.ts'
+import { compileWrapper, envFilesInStatus, splitCommit, STATUS_ARGS } from './commit.ts'
+import { bashVerdict, isEnvGlob, isEnvPath, isEnvResultLine, type BashVerdict } from './rules.ts'
 
 const ASK = 'These files commonly contain secrets. Ask the user to share specific values directly if needed.'
 
+const REASON: Record<Exclude<BashVerdict, 'allow'>, string> = {
+  deny: `Bash blocked: the command references a .env file. ${ASK}`,
+  'deny-git': 'Bash blocked: the git command references a .env file other than .env.example, the only one permitted.',
+}
+
 // Fail-closed: a guard that crashes before the tool runs denies; one that crashes after
 // withholds the result.
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const wrapper = compileWrapper(options.commitWrapper)
+
   on('tool.call', { tool: 'Read' }, ($, e, next) =>
     isEnvPath(e.file_path) ? { deny: `${$.plugin.name}: Read blocked: .env files are off-limits (${e.file_path}). ${ASK}` } : next(e),
   ).catch($ => ({ deny: `${$.plugin.name}: its Read guard failed.` }))
 
-  on('tool.call', { tool: 'Bash' }, ($, e, next) => {
+  // A commit whose message mentions .env is denied only while git reports a .env file
+  // staged, modified or untracked in that repository.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const verdict = bashVerdict(e.command)
-    if (verdict === 'deny') return { deny: `${$.plugin.name}: Bash blocked: the command references a .env file. ${ASK}` }
-    if (verdict === 'deny-git') return { deny: `${$.plugin.name}: Bash blocked: the git command references a .env file other than .env.example, the only one permitted.` }
+    if (verdict === 'allow') return next(e)
+    const deny = { deny: `${$.plugin.name}: ${REASON[verdict]}` }
+
+    if (!/\bcommit\b/.test(e.command) && !wrapper?.test(e.command)) return deny
+    const commit = splitCommit(e.command, await $.session.cwd(), wrapper)
+    if (commit === undefined || commit.isUnsafe) return deny
+    const restVerdict = bashVerdict(commit.rest)
+    if (restVerdict !== 'allow') return { deny: `${$.plugin.name}: ${REASON[restVerdict]}` }
+
+    const status = await $.process.run(STATUS_ARGS(commit.repo), { timeoutMs: 15_000 })
+    if (status.exitCode !== 0) return { deny: `${$.plugin.name}: Bash blocked: the commit message mentions .env and git status failed in ${commit.repo}, so no .env file could be ruled out.` }
+    const envFiles = envFilesInStatus(status.stdout)
+    if (envFiles.length > 0) return { deny: `${$.plugin.name}: Bash blocked: the commit message mentions .env while ${envFiles.join(', ')} ${envFiles.length === 1 ? 'is' : 'are'} staged or modified in ${commit.repo}.` }
     return next(e)
   }).catch($ => ({ deny: `${$.plugin.name}: its Bash guard failed.` }))
 
