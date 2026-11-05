@@ -25,14 +25,6 @@ test('bashVerdict: non-git commands deny, git allows only .env.example', () => {
   expect(bashVerdict('echo preventing myproject.environment')).toBe('allow')
 })
 
-test('Read of a .env file is denied before the tool runs', async ($, on) => {
-  let ran = false
-  on('tool.call', () => ((ran = true), { result: 'ran' }))
-  const r = await $.tool.call({ tool: 'Read', file_path: '/repo/.env' } as any)
-  expect(String(r.deny)).toContain('Read blocked')
-  expect(ran).toBe(false)
-})
-
 test('Read of an ordinary file passes', async ($, on) => {
   answered(on)
   const r = await $.tool.call({ tool: 'Read', file_path: '/repo/src/Program.cs' } as any)

@@ -1,12 +1,20 @@
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 import { compileWrapper, envFilesInStatus, splitCommit, STATUS_ARGS } from './commit.ts'
+import { redactEnv } from './redact.ts'
 import { bashVerdict, isEnvGlob, isEnvPath, isEnvResultLine, type BashVerdict } from './rules.ts'
 
 const ASK = 'These files commonly contain secrets. Ask the user to share specific values directly if needed.'
 
 const REASON: Record<Exclude<BashVerdict, 'allow'>, string> = {
-  deny: `Bash blocked: the command references a .env file. ${ASK}`,
+  deny: `Bash blocked: the command references a .env file. Read it instead: Read returns it with secret values redacted. ${ASK}`,
   'deny-git': 'Bash blocked: the git command references a .env file other than .env.example, the only one permitted.',
+}
+
+// A path whose name, or whose symlink target's name, is a .env file.
+async function targetsEnv($: EngineInterface, path: string): Promise<boolean> {
+  if (isEnvPath(path)) return true
+  const stat = await $.fs.stat(path, { resolve: true }).catch(() => undefined)
+  return stat?.realPath !== undefined && isEnvPath(stat.realPath)
 }
 
 // Fail-closed: a guard that crashes before the tool runs denies; one that crashes after
@@ -14,9 +22,27 @@ const REASON: Record<Exclude<BashVerdict, 'allow'>, string> = {
 export const register: Register = (on, options) => {
   const wrapper = compileWrapper(options.commitWrapper)
 
-  on('tool.call', { tool: 'Read' }, ($, e, next) =>
-    isEnvPath(e.file_path) ? { deny: `${$.plugin.name}: Read blocked: .env files are off-limits (${e.file_path}). ${ASK}` } : next(e),
-  ).catch($ => ({ deny: `${$.plugin.name}: its Read guard failed.` }))
+  // A .env Read runs on the whole file so a multiline value opened before `offset` stays
+  // redacted, then the requested window is cut from the redacted text.
+  on('tool.call', { tool: 'Read' }, async ($, e, next) => {
+    if (!(await targetsEnv($, e.file_path))) return next(e)
+    const { offset, limit, ...whole } = e
+    const ran = await next(whole)
+    if (ran.deny !== undefined || ran.isError) return ran
+    if (ran.result.type !== 'text') return { deny: `${$.plugin.name}: Read of ${e.file_path} returned ${ran.result.type} content, which cannot be redacted; result withheld.` }
+
+    const lines = redactEnv(ran.result.file.content).split('\n')
+    const startLine = Math.max(1, offset ?? 1)
+    const window = lines.slice(startLine - 1, limit === undefined ? undefined : startLine - 1 + limit)
+    const file = { ...ran.result.file, content: window.join('\n'), numLines: window.length, startLine }
+    return { result: { ...ran.result, file }, context: [`${$.plugin.name}: ${e.file_path} was redacted: only key names, booleans, null words, empty values and short numbers under non-secret keys are shown. ${ASK}`] }
+  }).catch(($, e, next) => (next.called ? { deny: `${$.plugin.name}: its Read redaction failed; result withheld.` } : { deny: `${$.plugin.name}: its Read guard failed.` }))
+
+  // Edit and Write echo file contents back and would overwrite values the model never saw.
+  on('tool.call', { tool: ['Edit', 'Write', 'NotebookEdit'] }, async ($, e, next) => {
+    const path = 'file_path' in e ? e.file_path : e.notebook_path
+    return (await targetsEnv($, path)) ? { deny: `${$.plugin.name}: ${e.tool} blocked: .env files are read-only through redacted Read. Ask the user to make the change.` } : next(e)
+  }).catch($ => ({ deny: `${$.plugin.name}: its edit guard failed.` }))
 
   // A commit whose message mentions .env is denied only while git reports a .env file
   // staged, modified or untracked in that repository.
@@ -39,8 +65,8 @@ export const register: Register = (on, options) => {
   }).catch($ => ({ deny: `${$.plugin.name}: its Bash guard failed.` }))
 
   on('tool.call', { tool: 'Grep' }, async ($, e, next) => {
-    if (e.path !== undefined && isEnvPath(e.path)) return { deny: `${$.plugin.name}: Grep blocked: .env files are off-limits (${e.path}). ${ASK}` }
-    if (e.glob !== undefined && isEnvGlob(e.glob)) return { deny: `${$.plugin.name}: Grep blocked: the glob ${e.glob} targets .env files. ${ASK}` }
+    if (e.path !== undefined && isEnvPath(e.path)) return { deny: `${$.plugin.name}: Grep blocked: search .env files with Read, which redacts secret values (${e.path}). ${ASK}` }
+    if (e.glob !== undefined && isEnvGlob(e.glob)) return { deny: `${$.plugin.name}: Grep blocked: the glob ${e.glob} targets .env files; Read them instead, which redacts secret values. ${ASK}` }
 
     // A directory search still reaches .env files: strip their hits from the result.
     const ran = await next(e)

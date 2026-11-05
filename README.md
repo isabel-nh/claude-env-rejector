@@ -4,11 +4,33 @@ Claude Code mod to prevent accidental secret exfiltration through `.env` files.
 
 | Tool | Behavior |
 | --- | --- |
-| Read | Denies any file named `.env` or `.env.*` (`.env.example` included). |
+| Read | A file named `.env` or `.env.*` (`.env.example` included), or a symlink resolving to one, is returned redacted (see below). |
+| Edit, Write, NotebookEdit | Denied on `.env` files and symlinks to them: an edit result echoes file contents, and a write would overwrite values the model never saw. |
 | Bash | Denies any command naming a `.env` / `.env.*` file. Git commands may name `.env.example` only. A commit whose message mentions `.env` runs unless git reports a `.env` file staged, modified or untracked in that repository. |
 | Grep | Denies a `path` that is a `.env` file or a `glob` targeting `.env` files. Directory searches run, and hits from `.env` files are removed from the result before the model reads it. |
 
-If a guard fails, the call is denied, never passed through.
+If a guard fails, the call is denied, never passed through. If redaction fails after the file was read, the result is withheld.
+
+## Redacted Read
+
+Each line keeps its position, so line numbers match the file. Key names and `export` prefixes are kept; values are kept only when they are:
+
+- empty (`KEY=`);
+- a boolean or null word: `true`, `false`, `yes`, `no`, `on`, `off`, `null`, `none`, `nil`, `undefined` (any case);
+- a number of at most 10 digits (`5432`, `0.75`, `1e3`), unless the key name contains `SECRET`, `TOKEN`, `PASS`, `PWD`, `PIN`, `OTP`, `KEY`, `AUTH`, `CRED`, `PRIVATE`, `SALT`, `SIGN`, `CERT`, `SESSION`, `COOKIE`, `ACCOUNT`, `SSN`, `CARD`, `IBAN` or `ROUTING`.
+
+Quotes around a kept value are kept. Everything else is replaced:
+
+| Input | Output |
+| --- | --- |
+| `DB_PASSWORD=hunter2`, `URL=${BASE}/x`, `HEX=0xff` | `KEY=[redacted]` |
+| continuation lines of a multiline quoted value (an unclosed quote redacts to end of file) | `[redacted multiline value]` |
+| `# LOG_LEVEL=2` (commented-out assignment) | redacted as an assignment, `#` kept |
+| any other comment | `# [redacted comment]` |
+| a line that is not `KEY=VALUE` | `[redacted line]` |
+| inline comment after a value | dropped |
+
+`offset` / `limit` are applied after redacting the whole file, so a multiline value opened above the window stays redacted.
 
 ## Commit messages
 
@@ -35,6 +57,7 @@ A regular expression matched against each line of a Bash command; a matching lin
 
 - A Bash command that searches a directory (`rg PASSWORD .`, `grep -r KEY .`) still reaches `.env` files: only `.env` names typed in the command are matched.
 - MCP tools that read files are not covered.
+- A hard link to a `.env` file under another name is not detected; symlinks are.
 
 ## Install
 
