@@ -25,7 +25,7 @@ A regular expression matched against each line of a Bash command; a matching lin
 
 ```json
 "pluginConfigs": {
-  "env-rejector@claude-env-rejector": {
+  "env-rejector@isabel-nh": {
     "options": { "commitWrapper": "format-commit-message.*\\s-c(\\s|$)" }
   }
 }
@@ -38,21 +38,28 @@ A regular expression matched against each line of a Bash command; a matching lin
 
 ## Install
 
+The plugin is published through the [isabel-nh marketplace](https://github.com/isabel-nh/marketplace).
+
 At the prompt of a Claude Code terminal session:
 
 ```
-/plugin install env-rejector --marketplace isabel-nh/claude-env-rejector
+/plugin marketplace add isabel-nh/marketplace
+/plugin install env-rejector@isabel-nh
 ```
 
 From a shell:
 
 ```bash
-claude plugin install env-rejector --marketplace isabel-nh/claude-env-rejector
+claude plugin marketplace add isabel-nh/marketplace
 ```
 
-In the desktop app: click + next to the prompt box, then Plugins, Add marketplace with `isabel-nh/claude-env-rejector`, then Add plugin.
+```bash
+claude plugin install env-rejector@isabel-nh
+```
 
-Answer `y` to add the marketplace, then pick a scope (user scope applies to every session).
+In the desktop app: click + next to the prompt box, then Plugins, Add marketplace with `isabel-nh/marketplace`, then Add plugin.
+
+Pick a scope when prompted (user scope applies to every session).
 
 ## Development
 
