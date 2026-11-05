@@ -44,18 +44,19 @@ export const register: Register = (on, options) => {
     return (await targetsEnv($, path)) ? { deny: `${$.plugin.name}: ${e.tool} blocked: .env files are read-only through redacted Read. Ask the user to make the change.` } : next(e)
   }).catch($ => ({ deny: `${$.plugin.name}: its edit guard failed.` }))
 
-  // A commit whose message mentions .env is denied only while git reports a .env file
-  // staged, modified or untracked in that repository.
+  // A .env mention in a gh / az PR title or body runs. A commit whose message mentions .env
+  // is denied only while git reports a .env file staged, modified or untracked in that repository.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const verdict = bashVerdict(e.command)
     if (verdict === 'allow') return next(e)
     const deny = { deny: `${$.plugin.name}: ${REASON[verdict]}` }
 
-    if (!/\bcommit\b/.test(e.command) && !wrapper?.test(e.command)) return deny
+    if (!/\b(commit|pr)\b/.test(e.command) && !wrapper?.test(e.command)) return deny
     const commit = splitCommit(e.command, await $.session.cwd(), wrapper)
     if (commit === undefined || commit.isUnsafe) return deny
     const restVerdict = bashVerdict(commit.rest)
     if (restVerdict !== 'allow') return { deny: `${$.plugin.name}: ${REASON[restVerdict]}` }
+    if (commit.repo === undefined) return next(e)
 
     const status = await $.process.run(STATUS_ARGS(commit.repo), { timeoutMs: 15_000 })
     if (status.exitCode !== 0) return { deny: `${$.plugin.name}: Bash blocked: the commit message mentions .env and git status failed in ${commit.repo}, so no .env file could be ruled out.` }

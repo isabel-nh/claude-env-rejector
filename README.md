@@ -6,7 +6,7 @@ Claude Code mod to prevent accidental secret exfiltration through `.env` files.
 | --- | --- |
 | Read | A file named `.env` or `.env.*` (`.env.example` included), or a symlink resolving to one, is returned redacted (see below). |
 | Edit, Write, NotebookEdit | Denied on `.env` files and symlinks to them: an edit result echoes file contents, and a write would overwrite values the model never saw. |
-| Bash | Denies any command naming a `.env` / `.env.*` file. Git commands may name `.env.example` only. A commit whose message mentions `.env` runs unless git reports a `.env` file staged, modified or untracked in that repository. |
+| Bash | Denies any command naming a `.env` / `.env.*` file. Git commands may name `.env.example` only. A commit whose message mentions `.env` runs unless git reports a `.env` file staged, modified or untracked in that repository. A `gh` / `az` PR title or body mentioning `.env` runs. |
 | Grep | Denies a `path` that is a `.env` file or a `glob` targeting `.env` files. Directory searches run, and hits from `.env` files are removed from the result before the model reads it. |
 
 If a guard fails, the call is denied, never passed through. If redaction fails after the file was read, the result is withheld.
@@ -40,6 +40,17 @@ A `.env` mention inside commit-message text does not read anything, so it is jud
 - Repository: the last `git -C <dir>`, else a leading `cd <dir>`, else the session's directory.
 - The commit is denied while `git status` lists any `.env` / `.env.*` file other than `.env.example` (staged, modified or untracked), when `git status` fails, or when the message expands a `.env` read (`-m "$(cat .env)"`).
 - Anything outside the message text is held to the ordinary Bash rule: `cat .env && git commit -m x` and `git commit -F .env` are denied.
+
+## PR titles and bodies
+
+A `.env` mention in the text of a pull-request command runs without a `git status` check, since a PR carries only what is already pushed:
+
+| Command | Message text |
+| --- | --- |
+| `gh pr create`, `edit`, `comment`, `review`, `merge` | `-t` / `--title`, `-b` / `--body`, `--subject` values (and their `=` forms); the heredoc of `-F -` / `--body-file -` |
+| `az repos pr create`, `update` | `--title` value; every word after `-d` / `--description` up to the next flag (and the `=` forms) |
+
+The binary may be named by an unquoted path (`/c/tools/gh.exe`). Denied as before: a body read from a file (`--body-file .env`), text that expands a `.env` read (`--body "$(cat .env)"`), and a `.env` name anywhere else in the command.
 
 ### Option: `commitWrapper`
 

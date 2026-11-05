@@ -8,6 +8,18 @@ const CD = new RegExp(`^\\s*[({]?\\s*(?:cd|pushd)\\s+(?:--\\s+)?${WORD}`)
 const GIT_OPTION = `(?:-C\\s+${WORD}|-c\\s+\\S+|--?[A-Za-z][\\w-]*(?:=\\S+)?)`
 const GIT_COMMIT = new RegExp(`(?:^|[^\\w./-])git\\s+(?:${GIT_OPTION}\\s+)*commit(?=[\\s"')]|$)`, 'g')
 const DIR_FLAG = new RegExp(`\\s-C\\s+${WORD}`, 'g')
+// PR commands whose title/body flags are message text; an unquoted path to the binary is allowed.
+const BINARY_PATH = `(?<![^\\s;&|({\\n])(?:[\\w.:~-]*[\\\\/])*`
+const GH_PR = new RegExp(`${BINARY_PATH}gh(?:\\.exe)?\\s+pr\\s+(?:create|edit|comment|review|merge)(?=[\\s"')]|$)`, 'g')
+const AZ_PR = new RegExp(`${BINARY_PATH}az(?:\\.cmd)?\\s+repos\\s+pr\\s+(?:create|update)(?=[\\s"')]|$)`, 'g')
+
+// Flags whose value is message text: `single` takes the next word, `multi` every following
+// word up to the next flag, `attached` a `--flag=value` word; `stdin` followed by `-` reads a heredoc.
+type TextFlags = { single: RegExp; attached: RegExp; multi?: RegExp; stdin?: RegExp; stdinAttached?: string }
+const COMMIT_FLAGS: TextFlags = { single: /^(-[A-Za-z]*m|--message)$/, attached: /^(--message=|-[A-Za-z]*m(?=\S))/, stdin: /^(-F|--file)$/, stdinAttached: '--file=-' }
+const GH_FLAGS: TextFlags = { single: /^(-t|--title|-b|--body|--subject)$/, attached: /^(--title=|--body=|--subject=)/, stdin: /^(-F|--body-file)$/, stdinAttached: '--body-file=-' }
+// az: -t is --target-branch, and --description takes several words.
+const AZ_FLAGS: TextFlags = { single: /^--title$/, attached: /^(--title=|--description=)/, multi: /^(-d|--description)$/ }
 
 const HEREDOC = /(?<!<)<<(-?)\s*(['"]?)([A-Za-z_]\w*)\2/g
 const CAT_HEREDOC = /\$\(\s*cat\s*<<-?\s*(['"]?)[A-Za-z_]\w*\1\s*\)/g
@@ -21,7 +33,8 @@ type Token = Range & { raw: string }
 type Message = { text: string; expands: boolean }
 
 export type CommitSplit = {
-  repo: string
+  // The repository of the commit; undefined when the command holds only PR commands.
+  repo: string | undefined
   // The command with commit-message text cut out; judged by the ordinary Bash rules.
   rest: string
   // A message whose shell expansion would itself read a .env file: `-m "$(cat .env)"`.
@@ -142,8 +155,17 @@ function unquote(raw: string): Message {
   return { text: raw.replace(/^(['"])([\s\S]*)\1$/, '$2'), expands: !single }
 }
 
-function commitStarts(text: string, masked: string, mask: readonly boolean[], cwd: string, wrapper: RegExp | undefined) {
-  const starts: { at: number; repo: string; isWrapper: boolean }[] = []
+// flags undefined: a wrapper, whose quoted arguments are all message text.
+type Start = { at: number; repo: string | undefined; flags: TextFlags | undefined }
+
+function messageStarts(text: string, masked: string, mask: readonly boolean[], cwd: string, wrapper: RegExp | undefined) {
+  const starts: Start[] = []
+  for (const [pattern, flags] of [[GH_PR, GH_FLAGS], [AZ_PR, AZ_FLAGS]] as const) {
+    for (const m of masked.matchAll(pattern)) {
+      if (mask[m.index] || !COMMAND_POSITION.test(masked.slice(0, m.index))) continue
+      starts.push({ at: m.index + m[0].length, repo: undefined, flags })
+    }
+  }
   const lineOf = (i: number) => text.slice(text.lastIndexOf('\n', i - 1) + 1, i)
   for (const m of masked.matchAll(GIT_COMMIT)) {
     const gitAt = m.index + m[0].indexOf('git')
@@ -152,7 +174,7 @@ function commitStarts(text: string, masked: string, mask: readonly boolean[], cw
     for (const d of m[0].matchAll(DIR_FLAG)) dir = word(d, 1)
     const cd = CD.exec(lineOf(gitAt))
     const cdDir = cd ? word(cd, 1) : undefined
-    starts.push({ at: m.index + m[0].length, repo: resolve(dir ?? cdDir ?? cwd, cwd), isWrapper: false })
+    starts.push({ at: m.index + m[0].length, repo: resolve(dir ?? cdDir ?? cwd, cwd), flags: COMMIT_FLAGS })
   }
   if (wrapper !== undefined) {
     let offset = 0
@@ -163,7 +185,7 @@ function commitStarts(text: string, masked: string, mask: readonly boolean[], cw
         const flagDir = dir ? word(dir, 1) : undefined
         const cd = CD.exec(line)
         const cdDir = cd ? word(cd, 1) : undefined
-        starts.push({ at: offset + hit, repo: resolve(flagDir ?? cdDir ?? cwd, cwd), isWrapper: true })
+        starts.push({ at: offset + hit, repo: resolve(flagDir ?? cdDir ?? cwd, cwd), flags: undefined })
       }
       offset += line.length + 1
     }
@@ -180,16 +202,18 @@ const isUnsafeExpansion = (m: Message): boolean => {
   return SUBSTITUTION.test(t) && LOOSE_ENV.test(t)
 }
 
-// Splits commit-message text out of a command holding one git commit (or a configured
-// wrapper), so a .env mention in a message can be told apart from a .env read.
-// Undefined when the command holds no commit, or more than one repository's.
+// Splits message text out of a command holding git commits (or a configured wrapper) in
+// one repository, and gh / az PR commands, so a .env mention in a commit message, PR title
+// or PR body can be told apart from a .env read.
+// Undefined when the command holds none of them, or commits in more than one repository.
 export function splitCommit(command: string, cwd: string, wrapper?: RegExp): CommitSplit | undefined {
   const heredocs = findHeredocs(command)
   const bodies = heredocs.map(h => h.body)
   const mask = quoteMask(command, bodies)
   const masked = [...command].map((c, i) => (bodies.some(b => within(i, b)) && c !== '\n' ? ' ' : c)).join('')
-  const starts = commitStarts(command, masked, mask, cwd, wrapper)
-  if (starts.length === 0 || new Set(starts.map(s => s.repo)).size > 1) return undefined
+  const starts = messageStarts(command, masked, mask, cwd, wrapper)
+  const repos = new Set(starts.flatMap(s => (s.repo === undefined ? [] : [s.repo])))
+  if (starts.length === 0 || repos.size > 1) return undefined
 
   const cut: Range[] = []
   const messages: Message[] = []
@@ -198,27 +222,23 @@ export function splitCommit(command: string, cwd: string, wrapper?: RegExp): Com
   for (const s of starts) {
     const toks = tokens(command, s.at, mask, bodies)
     let readsStdin = false
+    const take = (r: Range) => {
+      cut.push(r)
+      messages.push(unquote(textOf(r)))
+    }
     for (let k = 0; k < toks.length; k++) {
       const t = toks[k]!
-      if (s.isWrapper) {
-        if (/^["']/.test(t.raw)) {
-          cut.push(t)
-          messages.push(unquote(textOf(t)))
-        }
+      const f = s.flags
+      if (f === undefined) {
+        if (/^["']/.test(t.raw)) take(t)
         continue
       }
-      const attached = /^(--message=|-[A-Za-z]*m(?=\S))/.exec(t.raw)
-      if (/^(-[A-Za-z]*m|--message)$/.test(t.raw) && toks[k + 1] !== undefined) {
-        const next = toks[++k]!
-        cut.push(next)
-        messages.push(unquote(textOf(next)))
-      } else if (attached !== null) {
-        const value = { start: t.start + attached[0].length, end: t.end }
-        cut.push(value)
-        messages.push(unquote(textOf(value)))
-      } else if (t.raw === '--file=-' || ((t.raw === '-F' || t.raw === '--file') && toks[k + 1]?.raw === '-')) {
-        readsStdin = true
-      }
+      const attached = f.attached.exec(t.raw)
+      if (f.single.test(t.raw) && toks[k + 1] !== undefined) take(toks[++k]!)
+      else if (f.multi?.test(t.raw)) {
+        while (toks[k + 1] !== undefined && !toks[k + 1]!.raw.startsWith('-')) take(toks[++k]!)
+      } else if (attached !== null) take({ start: t.start + attached[0].length, end: t.end })
+      else if (t.raw === f.stdinAttached || (f.stdin?.test(t.raw) === true && toks[k + 1]?.raw === '-')) readsStdin = true
     }
     // Heredoc bodies that are message text: inside a cut message, or stdin of `commit -F -`.
     const segmentEnd = toks.length > 0 ? toks[toks.length - 1]!.end : s.at
@@ -232,7 +252,7 @@ export function splitCommit(command: string, cwd: string, wrapper?: RegExp): Com
   }
 
   const rest = [...command].filter((_, i) => !cut.some(r => within(i, r))).join('')
-  return { repo: starts[0]!.repo, rest, isUnsafe: messages.some(isUnsafeExpansion) }
+  return { repo: [...repos][0], rest, isUnsafe: messages.some(isUnsafeExpansion) }
 }
 
 // Paths git reports as staged, modified or untracked whose basename is a .env file;
