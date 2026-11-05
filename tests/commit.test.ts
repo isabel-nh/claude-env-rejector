@@ -140,6 +140,57 @@ test('configured wrapper commit mentioning .env runs with a clean tree', { optio
   expect(ran).toEqual([cmd])
 })
 
+test('splitCommit: gh pr title and body flags are message text', () => {
+  for (const cmd of [
+    'gh pr create --base main --title "Redact .env on Read" --body "Reads .env.local redacted"',
+    'gh pr edit 2 -t "Fix .env" -b "x"',
+    'gh pr create --title=".env" --body-file=-',
+    'gh pr comment 2 --body "Mentions .env"',
+    'gh pr merge 2 --squash --subject "Redact .env"',
+    '"/c/Program Files/GitHub CLI/gh.exe" --version && /c/tools/gh.exe pr create --title ".env"',
+  ]) {
+    const s = splitCommit(cmd, CWD)!
+    expect(s.rest).not.toContain('.env')
+    expect(s.repo).toBeUndefined()
+  }
+})
+
+test('splitCommit: gh --body-file - heredoc is message text; --body-file .env stays in the rest', () => {
+  expect(splitCommit("gh pr create --title x --body-file - <<'EOF'\nRedacts .env\nEOF", CWD)!.rest).not.toContain('.env')
+  expect(splitCommit('gh pr create --title x -F .env', CWD)!.rest).toContain('.env')
+  expect(splitCommit('gh pr create --title x --body-file .env', CWD)!.rest).toContain('.env')
+})
+
+test('splitCommit: az repos pr title and multi-word description are message text', () => {
+  const s = splitCommit('az repos pr create -s feat -t main --title "Redact .env" --description "Line about .env" "Second .env.local line" --draft', CWD)!
+  expect(s.rest).not.toContain('.env')
+  expect(s.rest).toContain('--draft')
+  expect(splitCommit('az repos pr update --id 5 -d ".env note"', CWD)!.rest).not.toContain('.env')
+  expect(splitCommit('az repos pr update --id 5 --description=".env note"', CWD)!.rest).not.toContain('.env')
+})
+
+test('splitCommit: PR text expanding a .env read is unsafe; non-PR gh and az are not message text', () => {
+  expect(splitCommit('gh pr create --body "$(cat .env)"', CWD)!.isUnsafe).toBe(true)
+  expect(splitCommit('az repos pr create --description "$(cat .env)"', CWD)!.isUnsafe).toBe(true)
+  expect(splitCommit('gh issue create --title ".env"', CWD)).toBeUndefined()
+  expect(splitCommit('echo "gh pr create --title" .env', CWD)).toBeUndefined()
+})
+
+test('PR command mentioning .env in its title runs without consulting git', async ($, on) => {
+  const { ran, gitCalls } = setup(on, z('A  .env'))
+  const cmd = 'gh pr create --base main --title "✨ Redact .env files on Read"'
+  const r = await $.tool.call({ tool: 'Bash', command: cmd } as any)
+  expect(r.deny).toBeUndefined()
+  expect(ran).toEqual([cmd])
+  expect(gitCalls).toEqual([])
+})
+
+test('PR command reading a .env file is denied', async ($, on) => {
+  setup(on, z())
+  const r = await $.tool.call({ tool: 'Bash', command: 'gh pr create --title x --body-file .env' } as any)
+  expect(String(r.deny)).toContain('references a .env file')
+})
+
 test('without a wrapper configured the same command is denied', async ($, on) => {
   setup(on, z())
   const r = await $.tool.call({ tool: 'Bash', command: 'format-commit-message.sh -c -q -C C:/r "Retire .env hooks"' } as any)
