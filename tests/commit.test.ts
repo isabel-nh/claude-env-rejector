@@ -196,3 +196,18 @@ test('without a wrapper configured the same command is denied', async ($, on) =>
   const r = await $.tool.call({ tool: 'Bash', command: 'format-commit-message.sh -c -q -C C:/r "Retire .env hooks"' } as any)
   expect(r.deny).toBeDefined()
 })
+
+test('a guard crash before the command runs denies and names the cause', async ($, on) => {
+  const ran: string[] = []
+  on('session.cwd', () => ({ value: CWD }))
+  on('tool.call', (_: unknown, e: any) => {
+    ran.push(e.command)
+    return { result: 'ran' }
+  })
+  // No process.run answer: the guard's git status call throws.
+  const r = await $.tool.call({ tool: 'Bash', command: 'git commit -m "Add .env"' } as any)
+  expect(String(r.deny)).toContain('its Bash guard failed before the command ran (throw: ')
+  expect(String(r.deny)).toContain('process.run')
+  expect(String(r.deny)).toContain('The command did not run')
+  expect(ran).toEqual([])
+})

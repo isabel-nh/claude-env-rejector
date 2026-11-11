@@ -1,4 +1,4 @@
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, HookFailure, Register } from 'claude-code'
 import { compileWrapper, envFilesInStatus, splitCommit, STATUS_ARGS } from './commit.ts'
 import { redactEnv } from './redact.ts'
 import { bashVerdict, isEnvGlob, isEnvPath, isEnvResultLine, type BashVerdict } from './rules.ts'
@@ -17,8 +17,12 @@ async function targetsEnv($: EngineInterface, path: string): Promise<boolean> {
   return stat?.realPath !== undefined && isEnvPath(stat.realPath)
 }
 
+// Why a guard failed, for its deny reason.
+const cause = (error: HookFailure): string => `${error.kind}${error.message === undefined ? '' : `: ${error.message}`}`
+
 // Fail-closed: a guard that crashes before the tool runs denies; one that crashes after
-// withholds the result.
+// withholds the result. A Bash failure after next was called replays what the command
+// settled to, since the guard had already allowed it.
 export const register: Register = (on, options) => {
   const wrapper = compileWrapper(options.commitWrapper)
 
@@ -36,13 +40,13 @@ export const register: Register = (on, options) => {
     const window = lines.slice(startLine - 1, limit === undefined ? undefined : startLine - 1 + limit)
     const file = { ...ran.result.file, content: window.join('\n'), numLines: window.length, startLine }
     return { result: { ...ran.result, file }, context: [`${$.plugin.name}: ${e.file_path} was redacted: only key names, booleans, null words, empty values and short numbers under non-secret keys are shown. ${ASK}`] }
-  }).catch(($, e, next) => (next.called ? { deny: `${$.plugin.name}: its Read redaction failed; result withheld.` } : { deny: `${$.plugin.name}: its Read guard failed.` }))
+  }).catch(($, e, next) => (next.called ? { deny: `${$.plugin.name}: its Read redaction failed (${cause(next.error)}); result withheld.` } : { deny: `${$.plugin.name}: its Read guard failed (${cause(next.error)}).` }))
 
   // Edit and Write echo file contents back and would overwrite values the model never saw.
   on('tool.call', { tool: ['Edit', 'Write', 'NotebookEdit'] }, async ($, e, next) => {
     const path = 'file_path' in e ? e.file_path : e.notebook_path
     return (await targetsEnv($, path)) ? { deny: `${$.plugin.name}: ${e.tool} blocked: .env files are read-only through redacted Read. Ask the user to make the change.` } : next(e)
-  }).catch($ => ({ deny: `${$.plugin.name}: its edit guard failed.` }))
+  }).catch(($, e, next) => ({ deny: `${$.plugin.name}: its edit guard failed (${cause(next.error)}).` }))
 
   // A .env mention in a gh / az PR title or body runs. A commit whose message mentions .env
   // is denied only while git reports a .env file staged, modified or untracked in that repository.
@@ -63,7 +67,9 @@ export const register: Register = (on, options) => {
     const envFiles = envFilesInStatus(status.stdout)
     if (envFiles.length > 0) return { deny: `${$.plugin.name}: Bash blocked: the commit message mentions .env while ${envFiles.join(', ')} ${envFiles.length === 1 ? 'is' : 'are'} staged or modified in ${commit.repo}.` }
     return next(e)
-  }).catch($ => ({ deny: `${$.plugin.name}: its Bash guard failed.` }))
+  }).catch(($, e, next) =>
+    next.called ? next(e) : { deny: `${$.plugin.name}: its Bash guard failed before the command ran (${cause(next.error)}). The command did not run; it is safe to retry.` },
+  )
 
   on('tool.call', { tool: 'Grep' }, async ($, e, next) => {
     if (e.path !== undefined && isEnvPath(e.path)) return { deny: `${$.plugin.name}: Grep blocked: search .env files with Read, which redacts secret values (${e.path}). ${ASK}` }
@@ -85,5 +91,5 @@ export const register: Register = (on, options) => {
       if (r.mode === 'count') result.numMatches = kept.reduce((sum, line) => sum + Number(/:(\d+)$/.exec(line)?.[1] ?? 0), 0)
     }
     return { result, context: [...(ran.context ?? []), `${$.plugin.name}: matches inside .env files were removed from this result.`] }
-  }).catch(($, e, next) => (next.called ? { deny: `${$.plugin.name}: its Grep filter failed; result withheld.` } : { deny: `${$.plugin.name}: its Grep guard failed.` }))
+  }).catch(($, e, next) => (next.called ? { deny: `${$.plugin.name}: its Grep filter failed (${cause(next.error)}); result withheld.` } : { deny: `${$.plugin.name}: its Grep guard failed (${cause(next.error)}).` }))
 }

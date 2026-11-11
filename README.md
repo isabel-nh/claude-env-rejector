@@ -9,7 +9,7 @@ Claude Code mod to prevent accidental secret exfiltration through `.env` files.
 | Bash | Denies any command naming a `.env` / `.env.*` file. Git commands may name `.env.example` only. A commit whose message mentions `.env` runs unless git reports a `.env` file staged, modified or untracked in that repository. A `gh` / `az` PR title or body mentioning `.env` runs. |
 | Grep | Denies a `path` that is a `.env` file or a `glob` targeting `.env` files. Directory searches run, and hits from `.env` files are removed from the result before the model reads it. |
 
-If a guard fails, the call is denied, never passed through. If redaction fails after the file was read, the result is withheld.
+If a guard fails before the tool runs, the call is denied, never passed through, and the deny names the failure (`throw` or `timeout`, with the engine's message). If redaction fails after the file was read, the result is withheld. If the Bash guard fails after it let the command run, the command's own result stands.
 
 ## Redacted Read
 
