@@ -1,6 +1,6 @@
 {
   "name": "env-rejector",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Redacts .env files on Read down to key names, booleans and numbers; denies Bash, Edit and Write access to them and strips .env hits from Grep results, so secrets stay out of the model's context.",
   "author": { "name": "Isabel Maskrey" },
   "homepage": "https://github.com/isabel-nh/claude-env-rejector",
